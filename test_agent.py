@@ -133,3 +133,58 @@ class TestDocumentationAgent:
         assert len(data["tool_calls"]) > 0, "Should have made at least one tool call"
         tools_used = {tc.get("tool") for tc in data["tool_calls"]}
         assert "list_files" in tools_used, f"Should have used list_files, got: {tools_used}"
+
+
+class TestSystemAgent:
+    """Tests for system agent with query_api tool."""
+
+    @pytest.mark.asyncio
+    async def test_framework_question_uses_read_file(self):
+        """Test that agent uses read_file to find framework information from source code."""
+        result = subprocess.run(
+            [sys.executable, str(AGENT_PATH), "What framework does the backend use?"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        assert result.returncode == 0, f"Agent failed: {result.stderr}"
+
+        data = json.loads(result.stdout.strip())
+
+        # Should have answer
+        assert "answer" in data, "Missing 'answer' field"
+        assert len(data["answer"]) > 0, "'answer' should not be empty"
+
+        # Should have used read_file tool to read source code
+        assert "tool_calls" in data, "Missing 'tool_calls' field"
+        assert len(data["tool_calls"]) > 0, "Should have made at least one tool call"
+        tools_used = {tc.get("tool") for tc in data["tool_calls"]}
+        assert "read_file" in tools_used, f"Should have used read_file, got: {tools_used}"
+
+        # Answer should mention FastAPI
+        assert "fastapi" in data["answer"].lower() or "FastAPI" in data["answer"], \
+            f"Answer should mention FastAPI, got: {data['answer'][:200]}"
+
+    @pytest.mark.asyncio
+    async def test_database_count_uses_query_api(self):
+        """Test that agent uses query_api to get database item count."""
+        result = subprocess.run(
+            [sys.executable, str(AGENT_PATH), "How many items are in the database?"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        assert result.returncode == 0, f"Agent failed: {result.stderr}"
+
+        data = json.loads(result.stdout.strip())
+
+        # Should have answer
+        assert "answer" in data, "Missing 'answer' field"
+
+        # Should have used query_api tool
+        assert "tool_calls" in data, "Missing 'tool_calls' field"
+        assert len(data["tool_calls"]) > 0, "Should have made at least one tool call"
+        tools_used = {tc.get("tool") for tc in data["tool_calls"]}
+        assert "query_api" in tools_used, f"Should have used query_api, got: {tools_used}"

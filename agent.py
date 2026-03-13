@@ -152,13 +152,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file from the project repository. Use this to find information in documentation files.",
+            "description": "Read the contents of a file from the project repository. Use this to find information in documentation files or source code.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file from project root (e.g., 'wiki/git-workflow.md')",
+                        "description": "Relative path to the file from project root (e.g., 'wiki/git-workflow.md' or 'backend/app/main.py')",
                     }
                 },
                 "required": ["path"],
@@ -175,27 +175,124 @@ TOOLS = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the directory from project root (e.g., 'wiki')",
+                        "description": "Relative path to the directory from project root (e.g., 'wiki' or 'backend/app/routers')",
                     }
                 },
                 "required": ["path"],
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Call the deployed backend API to query data, check system behavior, or diagnose bugs. Use this for runtime questions about the database, API responses, or status codes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method (GET, POST, PUT, DELETE, etc.)",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API endpoint path (e.g., '/items/', '/analytics/completion-rate')",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body for POST/PUT requests",
+                    },
+                },
+                "required": ["method", "path"],
+            },
+        },
+    },
 ]
 
-# System prompt for the documentation agent
-SYSTEM_PROMPT = """You are a documentation assistant. You have access to tools that let you read files and list directories in a project wiki.
+# System prompt for the agent
+SYSTEM_PROMPT = """You are a system assistant with access to three tools:
 
-The wiki files are located in the 'wiki/' directory.
+1. `read_file` - Read files from the project repository (wiki documentation, source code, config files)
+2. `list_files` - List files and directories in the project
+3. `query_api` - Call the deployed backend API to query runtime data
 
 When asked a question:
-1. Use `list_files` with path="wiki" to discover what files exist in the wiki directory
-2. Use `read_file` with path="wiki/filename.md" to read relevant files and find the answer
-3. Include a source reference in your answer using the format: wiki/filename.md#section-anchor
-4. If you find the answer, provide it along with the source reference
+- For wiki documentation questions: use `list_files` to discover files, then `read_file` to find answers
+- For source code questions: use `read_file` to read the relevant source files
+- For runtime data questions (database counts, analytics, API behavior): use `query_api`
+- For bug diagnosis: use `query_api` to reproduce the error, then `read_file` to find the bug in source code
+- For system architecture questions: read config files like `docker-compose.yml` and `Dockerfile`
 
-Always be concise and accurate. Cite your sources by including the file path and section anchor."""
+Always include source references when reading files (e.g., wiki/file.md#section or backend/file.py:function).
+Be concise and accurate."""
+
+
+def get_lms_config() -> dict[str, str]:
+    """Load LMS backend configuration from environment or .env.docker.secret."""
+    # First try environment variables
+    lms_api_key = os.environ.get("LMS_API_KEY", "")
+    agent_api_base_url = os.environ.get("AGENT_API_BASE_URL", "http://localhost:42002")
+
+    # If not set, load from .env.docker.secret
+    if not lms_api_key:
+        env_path = Path(__file__).parent / ".env.docker.secret"
+        env_vars = load_env(env_path)
+        lms_api_key = env_vars.get("LMS_API_KEY", "")
+
+    return {
+        "api_key": lms_api_key,
+        "base_url": agent_api_base_url.rstrip("/"),
+    }
+
+
+def query_api(method: str, path: str, body: str = None) -> str:
+    """Call the deployed backend API.
+
+    Args:
+        method: HTTP method (GET, POST, etc.)
+        path: API endpoint path
+        body: Optional JSON request body
+
+    Returns:
+        JSON string with status_code and body, or error message.
+    """
+    config = get_lms_config()
+    url = f"{config['base_url']}{path}"
+    headers = {
+        "Authorization": f"Bearer {config['api_key']}",
+        "Content-Type": "application/json",
+    }
+
+    print(f"  Calling API: {method} {url}", file=sys.stderr)
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                data = json.loads(body) if body else {}
+                response = client.post(url, headers=headers, json=data)
+            elif method.upper() == "PUT":
+                data = json.loads(body) if body else {}
+                response = client.put(url, headers=headers, json=data)
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return f"Error: Unsupported method: {method}"
+
+            result = {
+                "status_code": response.status_code,
+                "body": response.json() if response.text else None,
+            }
+            return json.dumps(result)
+    except httpx.HTTPStatusError as e:
+        return json.dumps({"status_code": e.response.status_code, "error": str(e), "body": e.response.text[:500]})
+    except httpx.RequestError as e:
+        return json.dumps({"error": f"Request failed: {e}"})
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"Invalid JSON body: {e}"})
+    except Exception as e:
+        return json.dumps({"error": f"API call failed: {e}"})
 
 
 def execute_tool(name: str, args: dict) -> str:
@@ -210,6 +307,11 @@ def execute_tool(name: str, args: dict) -> str:
         if "error" in result:
             return f"Error: {result['error']}"
         return result["entries"]
+    elif name == "query_api":
+        method = args.get("method", "GET")
+        path = args.get("path", "")
+        body = args.get("body")
+        return query_api(method, path, body)
     else:
         return f"Error: Unknown tool: {name}"
 
