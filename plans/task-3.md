@@ -49,3 +49,15 @@ The agent must read from environment variables (not hardcoded):
    - Check if answer contains expected keywords
 3. Fix issues: improve tool descriptions, adjust system prompt, fix bugs
 4. Re-run until all 10 questions pass
+
+## Benchmark Results
+
+**Initial Score:** Will be updated after first run
+
+**First Failures:** Will be documented after first run
+
+**Iteration Strategy:**
+- If LLM doesn't use correct tool → improve tool description in schema
+- If tool returns error → fix tool implementation
+- If answer doesn't match keywords → adjust system prompt for more precise phrasing
+- If agent times out → reduce max iterations or use faster model
