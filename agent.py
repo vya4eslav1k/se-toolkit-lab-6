@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 
 # Maximum tool calls per question
-MAX_TOOL_CALLS = 10
+MAX_TOOL_CALLS = 20
 
 # Project root directory
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -202,6 +202,10 @@ TOOLS = [
                         "type": "string",
                         "description": "Optional JSON request body for POST/PUT requests",
                     },
+                    "use_auth": {
+                        "type": "boolean",
+                        "description": "Whether to include the Authorization header (default: true). Set to false to test unauthenticated requests.",
+                    },
                 },
                 "required": ["method", "path"],
             },
@@ -221,10 +225,18 @@ When asked a question:
 - For source code questions: use `read_file` to read the relevant source files
 - For runtime data questions (database counts, analytics, API behavior): use `query_api`
 - For bug diagnosis: use `query_api` to reproduce the error, then `read_file` to find the bug in source code
-- For system architecture questions: read config files like `docker-compose.yml` and `Dockerfile`
+- For system architecture questions: read config files like `docker-compose.yml`, `Dockerfile`, and `Caddyfile`
 
-Always include source references when reading files (e.g., wiki/file.md#section or backend/file.py:function).
-Be concise and accurate."""
+IMPORTANT - TOOL CALL EFFICIENCY:
+- You have a maximum of 15 tool calls per question - use them wisely
+- After reading 3-5 key files, STOP and provide your answer in the next response
+- Do NOT keep exploring after you have enough information
+- For "explain the journey" or "trace the flow" questions: read the main config files (docker-compose.yml, Dockerfile, Caddyfile, main.py) then synthesize the answer
+- After gathering information, respond with just your answer (no more tool calls) to end the conversation
+
+Include source references when reading files (e.g., wiki/file.md#section or backend/file.py:function).
+For multi-part questions, synthesize all information into one comprehensive answer.
+"""
 
 
 def get_lms_config() -> dict[str, str]:
@@ -245,13 +257,14 @@ def get_lms_config() -> dict[str, str]:
     }
 
 
-def query_api(method: str, path: str, body: str = None) -> str:
+def query_api(method: str, path: str, body: str = None, use_auth: bool = True) -> str:
     """Call the deployed backend API.
 
     Args:
         method: HTTP method (GET, POST, etc.)
         path: API endpoint path
         body: Optional JSON request body
+        use_auth: Whether to include the Authorization header (default: True)
 
     Returns:
         JSON string with status_code and body, or error message.
@@ -259,11 +272,14 @@ def query_api(method: str, path: str, body: str = None) -> str:
     config = get_lms_config()
     url = f"{config['base_url']}{path}"
     headers = {
-        "Authorization": f"Bearer {config['api_key']}",
         "Content-Type": "application/json",
     }
+    
+    # Only add Authorization header if use_auth is True
+    if use_auth:
+        headers["Authorization"] = f"Bearer {config['api_key']}"
 
-    print(f"  Calling API: {method} {url}", file=sys.stderr)
+    print(f"  Calling API: {method} {url} (auth: {use_auth})", file=sys.stderr)
 
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -311,7 +327,8 @@ def execute_tool(name: str, args: dict) -> str:
         method = args.get("method", "GET")
         path = args.get("path", "")
         body = args.get("body")
-        return query_api(method, path, body)
+        use_auth = args.get("use_auth", True)  # Default to True for backward compatibility
+        return query_api(method, path, body, use_auth)
     else:
         return f"Error: Unknown tool: {name}"
 
